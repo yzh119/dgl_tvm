@@ -1,4 +1,13 @@
 from tvm import relay
+from collections import namedtuple
+from dgl.data import load_data
+from tvm.contrib import graph_runtime
+import time
+import tvm
+import numpy as np
+import networkx as nx
+import argparse
+
 
 def GraphConv(
             layer_name,
@@ -53,15 +62,9 @@ def GraphConv(
         output_transposed = activation(output_transposed)
     return output_transposed
 
-import tvm, dgl, scipy
-import numpy as np
-import networkx as nx
-from collections import namedtuple
-from dgl.data import load_data
 
-def load_dataset(dataset="cora"):
-    args = namedtuple("args", ["dataset"])
-    dataset = load_data(args(dataset))
+def load_dataset(args):
+    dataset = load_data(args)
 
     params = {}
     params['infeats'] = dataset.features.astype('float32') # Only support float32 as feature for now
@@ -82,38 +85,20 @@ def load_dataset(dataset="cora"):
     params['norm'] = np.power(degs, -0.5).astype('float32')
     params['norm'] = params['norm'].reshape((params['norm'].shape[0], 1))
 
-    return params
+    return params, dataset.num_labels
 
-r"""
-Parameters
-----------
-num_hidden: int
-    number of hidden layers
+argparser = argparse.ArgumentParser('TVM GraphConv')
+argparser.add_argument('--num-hidden', '-l', default=1, type=int, help='Number of hidden layers')
+argparser.add_argument('--hidden_dim', '-d', default=16, type=int, help='Hidden size')
+argparser.add_argument('--dataset', '-data', default='cora', type=str, help='Dataset used.')
+args = argparser.parse_args()
 
-hidden_dim: int
-    input dimension of hidden layers
+num_hidden = args.num_hidden
+hidden_dim = args.hidden_dim
 
-num_classes: int
-    dimension of model output (Number of classes)
-
-target: str
-    currently only support llvm, GPU support will be added in next few weeks
-
-activation: <function relay.op.nn>,
-    Activation function applied to the output. e.g. relay.nn.{relu, sigmoid, log_softmax, softmax, leaky_relu}
-
-dataset: str
-    Name of dataset. You can pick from ['cora', 'citeseer', 'pubmed'] or you can use your own.
-"""
-
-num_hidden = 1
-hidden_dim = 16
-num_classes = 7
-target = 'llvm'
+target = 'llvm' #'llvm -mcpu=core-avx2'
 activation = relay.nn.relu
-
-dataset = "cora"
-params = load_dataset(dataset)
+params, num_classes = load_dataset(args)
 
 # Check shape of features
 assert len(params['infeats'].shape) == 2
@@ -175,9 +160,6 @@ output = layers[-1]
 # Analyze free variables and generate function
 func = relay.Function(relay.analysis.free_vars(output), output)
 
-from tvm.contrib import graph_runtime
-import time
-
 # Set up weights. You can modify this part and use your own trained weights.
 params['in_weight'] = np.ones((input_dim, hidden_dim), dtype='float32')
 params['out_weight'] = np.ones((hidden_dim, num_classes), dtype='float32')
@@ -196,7 +178,7 @@ m.set_input(**params)
 
 print("finished compiling, testing inference time cost")
 totaltime = 0
-for i in range(30):
+for i in range(100):
     st = time.time()
     # One forward pass on the entire network
     m.run()
@@ -206,8 +188,10 @@ for i in range(30):
 
     totaltime += (end-st)
 
-    if i == 0:
-        print("features of first five nodes \n %s" % outval[:5])
-    if i == 4:
-        print("5 Cycle Average Forward Pass Time ", totaltime/5)
-print("30 Cycle Average Forward Pass Time ", totaltime/30)
+print("100 Cycle Average Forward Pass Time ", totaltime/100)
+
+import os
+if not os.path.exists('logs'):
+    os.mkdir('logs')
+with open('logs/tvm_{}'.format('_'.join('{}-{}'.format(k, v) for k, v in vars(args).items())), 'w') as f:
+    print((totaltime/100) * 1000, file=f)
