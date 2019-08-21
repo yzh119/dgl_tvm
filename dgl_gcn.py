@@ -14,8 +14,6 @@ argparser.add_argument('--dataset', '-data', default='cora', type=str, help='Dat
 args = argparser.parse_args()
 
 activation = F.relu
-
-dataset = 'pubmed'
 data = load_data(args)
 
 g = data.graph
